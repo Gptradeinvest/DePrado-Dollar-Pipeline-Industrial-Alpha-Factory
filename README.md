@@ -15,4 +15,12 @@ Sur un dataset XAUUSD (2010-2025), le pipeline a démontré sa capacité à "net
 - Maxime respectée : Stabilité de l'Information > Stabilité du Temps.
 
 Utilisation
-Lancez simplement `python DePrado-Dollar-Pipeline.py`, sélectionnez votre CSV, et obtenez instantanément votre dataset prêt pour l'entraînement.
+Cloner le dépôt
+git clone https://github.com/votre-compte/DePrado-Dollar-Pipeline.git
+cd DePrado-Dollar-Pipeline
+
+Installer les dépendances
+pip install -r requirements.txt
+
+Lancer l'usine
+python alpha_pipeline.py
