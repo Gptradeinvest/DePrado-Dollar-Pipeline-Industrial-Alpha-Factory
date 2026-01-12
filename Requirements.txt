@@ -1,0 +1,16 @@
+# --- Cœur du Pipeline (Manipulation de données) ---
+pandas>=2.0.0
+numpy>=1.24.0
+
+# --- Analyse Statistique (Restauration de la Normalité) ---
+scipy>=1.10.0
+statsmodels>=0.14.0
+
+# --- Visualisation (Histogrammes et Analyse) ---
+matplotlib>=3.7.0
+
+# --- Machine Learning (Bagging / Random Forest) ---
+scikit-learn>=1.2.0
+
+# --- Optionnel (Récupération de données) ---
+yfinance>=0.2.0
