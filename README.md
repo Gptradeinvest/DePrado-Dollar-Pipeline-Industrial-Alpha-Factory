@@ -2,94 +2,85 @@
 
 **Alpha Factory industrielle basée sur les travaux de Marcos López de Prado (2018). Pipeline ETL complet : échantillonnage par Dollar Bars, labeling Triple Barrière, stationnarité via différentiation fractionnaire. Validation sur XAUUSD 2010–2025 : compression de 4139 barres D1 à 664 Dollar Bars, Jarque-Bera de 4509 à 1545. Optimisé Numba (JIT).**
 
----
-
-## Quickstart
-
 ```
 pip install numpy pandas scikit-learn matplotlib scipy yfinance
 python pipe.py
 ```
 
-Une seule commande. Le pipeline télécharge GLD (Gold ETF), construit les dollar bars, génère les features, entraîne le meta-model en walk-forward, produit un backtest net de coûts et livre un dashboard HTML interactif.
+Une commande. Le pipeline télécharge les données, construit les dollar bars, génère les features, entraîne un meta-model en walk-forward, produit un backtest net de coûts et livre un dashboard HTML.
 
 ---
 
 ## Architecture AFML
 
-Le pipeline implémente fidèlement les chapitres clés du livre :
-
-**Ch.2 — Dollar Bars** : Échantillonnage par volume en dollars plutôt que par le temps. Produit des bars aux propriétés statistiques supérieures (stationnarité, normalité des rendements, réduction de l'autocorrélation). Un contrôle qualité automatique du volume décide si les dollar bars sont exploitables ou si un fallback en time bars est nécessaire.
-
-**Ch.2.5 — Filtre CUSUM** : Détection d'événements structurels dans la série de prix. Seuls les points de changement significatif déclenchent une évaluation — le modèle ne trade pas en continu mais réagit aux ruptures.
-
-**Ch.3 — Triple Barrière** : Labeling par barrières symétriques (take-profit, stop-loss, horizon temporel). Chaque événement CUSUM reçoit un label basé sur le premier contact avec une barrière, calibré par la volatilité locale.
-
-**Ch.3.6 — Meta-Labeling** : Le signal primaire (momentum 20 jours) donne la direction. Un Random Forest apprend *quand* ce signal est fiable — il prédit si le trade sera gagnant, pas la direction elle-même. C'est le cœur de la méthode De Prado.
-
-**Ch.4 — Sample Weights** : Pondération par unicité (average uniqueness) et amplitude du rendement. Les échantillons redondants ou chevauchants reçoivent un poids réduit pour éviter le surentraînement.
-
-**Ch.5 — Fractional Differentiation (FFD)** : Transformation de la série de prix pour atteindre la stationnarité tout en préservant la mémoire longue. Le paramètre d=0.4 offre un compromis entre stationnarité et conservation de l'information.
-
-**Ch.7 — Purged K-Fold CV** : Validation croisée avec purge temporel et embargo. Élimine le look-ahead bias inhérent aux CV standards sur données financières.
-
-**Ch.10 — Bet Sizing** : Dimensionnement des positions par la probabilité du meta-model, transformée via la CDF normale. Plus le modèle est confiant, plus la taille de position est élevée.
-
-**Ch.17 — SADF (Structural Breaks)** : Détection de bulles par le Supreme Augmented Dickey-Fuller test. Utilisé comme feature et comme indicateur de régime (BUBBLE/NORMAL).
-
-**Ch.18 — Entropy** : Shannon, plug-in et Lempel-Ziv. Mesure la complexité informationnelle de la série de prix — un marché à faible entropie est plus prévisible.
+| Chapitre | Module | Description |
+|----------|--------|-------------|
+| Ch.2 | `dollar_bars` | Échantillonnage par volume en dollars. Contrôle qualité automatique (CV, % jours zéro). Fallback time bars si volume insuffisant |
+| Ch.2.5 | `cusum_filter` | Filtre CUSUM symétrique. Détection d'événements structurels, threshold auto par écart-type des log-rendements |
+| Ch.3 | `triple_barrier` | Labeling TP/SL/Time calibré par volatilité locale. Barrières asymétriques paramétrables |
+| Ch.3.6 | `meta_label` | Le signal primaire donne la direction, le RF apprend *quand* ce signal est fiable |
+| Ch.4 | `sample_weights` | Pondération par unicité (average uniqueness) × amplitude du rendement |
+| Ch.5 | `frac_diff_ffd` | Fixed-width window FFD. Stationnarité avec mémoire longue (d=0.4) |
+| Ch.7 | `PurgedKFoldCV` | K-Fold avec purge temporel + embargo. Élimine le look-ahead bias |
+| Ch.8 | `mda_importance` | Mean Decrease Accuracy par permutation. Élagage automatique des features bruit |
+| Ch.10 | `bet_size` | Dimensionnement par transformation CDF de la probabilité du meta-model |
+| Ch.11 | `CombPurgedCV` | C(N,k) chemins de backtest combinatoires avec purge |
+| Ch.14 | `deflated_sharpe` | Test de significativité du Sharpe ajusté pour le multiple testing |
+| Ch.17 | `sadf` | Supreme ADF — détection de régimes de bulle |
+| Ch.18 | `entropy_features` | Shannon, plug-in, Lempel-Ziv sur log-rendements |
 
 ---
 
-## Signal Primaire — Momentum
+## Signal primaire
 
-Le modèle primaire est un momentum pur à 20 jours :
+Momentum pur à 20 jours :
 
 ```
 side = sign(close[t] / close[t-20] - 1)
 ```
 
-Si le prix a monté sur 20 jours → LONG. Sinon → SHORT. Le meta-model RF décide ensuite si ce signal est fiable dans le contexte courant (volatilité, entropie, régime, fractional diff).
+Le meta-model Random Forest décide si ce signal est fiable dans le contexte courant (volatilité, entropie, régime SADF, fractional diff). Le MDA pruning (Ch.8) élague automatiquement les features non contributives — typiquement 4 features retenues sur 8.
 
 ---
 
 ## Backtest
 
-Le moteur de backtest simule chaque trade avec un modèle de coûts réaliste :
+Modèle de coûts réaliste appliqué à chaque trade :
 
-- **Spread** round-trip (0.04% par défaut)
-- **Slippage** entrée + sortie (0.01% × 2)
-- **Swap** overnight (0.015% × jours de détention)
+| Composante | Valeur par défaut |
+|------------|-------------------|
+| Spread (round-trip) | 0.04% |
+| Slippage (entrée + sortie) | 0.02% |
+| Swap overnight | 0.015% × jours |
 
-Les métriques reportées sont nettes de tous coûts : Sharpe, max drawdown, Calmar, win rate, profit factor.
-
----
-
-## Contrôle Qualité des Données
-
-Le pipeline intègre un diagnostic automatique du volume :
-
-```
-Volume Quality: GOOD (CV=0.66, zero_days=0.0%) → dollar bars
-Volume Quality: POOR (CV=5.1, zero_days=12.3%) → fallback time bars
-```
-
-Les futures (GC=F, CL=F) ont un volume Yahoo erratique — le système le détecte et bascule automatiquement. Les ETF (GLD, SPY) et les actions US offrent un volume fiable pour les dollar bars.
+Métriques nettes de coûts : Sharpe, max drawdown, Calmar, win rate, profit factor, skew, kurtosis des rendements.
 
 ---
 
-## Modes d'Utilisation
+## Contrôle qualité des données
+
+```
+Volume : GOOD (CV=0.66, zéros=0.0%) → dollar bars
+Volume : POOR (CV=5.1, zéros=12.3%) → fallback time bars
+```
+
+Les futures (GC=F, CL=F) ont un volume Yahoo Finance erratique. Les ETF (GLD, SPY) et actions US offrent un volume fiable. Le pipeline détecte et bascule automatiquement.
+
+---
+
+## Modes
 
 | Commande | Description |
 |----------|-------------|
 | `python pipe.py` | Clé en main : GLD, signal + backtest + dashboard |
 | `python pipe.py --fetch SPY` | Autre ticker |
 | `python pipe.py --fetch BTC` | Crypto |
-| `python pipe.py data.csv` | CSV local |
-| `python pipe.py --research` | Mode recherche (CV, rapports) |
-| `python pipe.py --daily` | Mode cron quotidien (incrémental) |
-| `python pipe.py --optimize --n-iter 100` | Random search sur les paramètres |
+| `python pipe.py data.csv` | CSV local (OHLCV) |
+| `python pipe.py --research` | CPCV, MDA, rapports de distribution |
+| `python pipe.py --daily` | Mode cron incrémental |
+| `python pipe.py --optimize --n-iter 100` | Random search + Deflated Sharpe |
 | `python pipe.py --start 2015-01-01` | Période personnalisée |
+| `python pipe.py --tf h4 d1 w1` | Multi-timeframe séquentiel |
 
 ---
 
@@ -97,42 +88,92 @@ Les futures (GC=F, CL=F) ont un volume Yahoo erratique — le système le détec
 
 | Fichier | Contenu |
 |---------|---------|
-| `signal_latest.json` | Dernier signal (side, confidence, bet size, SL/TP, régime) |
-| `signals_history.csv` | Historique complet des signaux walk-forward |
-| `backtest_trades.csv` | Détail de chaque trade avec P&L et coûts |
-| `signal_meta.json` | Configuration du pipeline + statistiques du backtest |
-| `dashboard.html` | Dashboard interactif (equity curve, drawdown, trades) |
+| `signal_latest.json` | Dernier signal : direction, confiance, taille, SL/TP, régime |
+| `signals_history.csv` | Historique walk-forward complet |
+| `backtest_trades.csv` | P&L par trade avec décomposition des coûts |
+| `signal_meta.json` | Configuration pipeline + statistiques backtest |
+| `dashboard.html` | Dashboard interactif (equity, drawdown, P&L, trades) |
+| `distribution_report.png` | Distribution des rendements, labels, SADF, weights |
+| `optimize_results.json` | Meilleurs paramètres + DSR (mode optimize) |
 
 ---
 
 ## Résultats
 
-### XAUUSD 2010–2025 (validation)
+### XAUUSD 2010–2025 (validation ETL)
+
+| Métrique | Time Bars | Dollar Bars |
+|----------|-----------|-------------|
+| Barres | 4139 | 664 |
+| Jarque-Bera | 4509 | 1545 |
+
+### GLD 2020–2026 (walk-forward, net de coûts)
 
 | Métrique | Valeur |
 |----------|--------|
-| Barres D1 → Dollar Bars | 4139 → 664 |
-| Jarque-Bera | 4509 → 1545 |
+| Sharpe | 2.26 |
+| Return | +11.64% |
+| Max Drawdown | -4.35% |
+| Calmar | 2.68 |
+| Win Rate | 61.8% |
+| Profit Factor | 1.46 |
+| Trades | 131 |
+| Avg Hold | 3 jours |
+| Features retenues (MDA) | 4 / 8 |
 
-### GLD 2020–2026 (live)
+---
 
-| Métrique | Valeur |
-|----------|--------|
-| Sharpe | 2.10 |
-| Return (net) | +8.04% |
-| Max Drawdown | -2.74% |
-| Calmar | 2.94 |
-| Win Rate | 64.6% |
-| Profit Factor | 1.42 |
-| Trades | 130 |
-| Avg Hold | 2.7 jours |
+## Statut
+
+**Paper trading / Pédagogie** — prêt.
+
+**Production (capital réel)** — manquant :
+
+| Brique | Statut |
+|--------|--------|
+| Pipeline AFML complet | ✓ |
+| Backtest réaliste (coûts) | ✓ |
+| MDA pruning automatique | ✓ |
+| Volume quality check | ✓ |
+| Daily cron mode | ✓ |
+| Dashboard interactif | ✓ |
+| Deflated Sharpe Ratio | ✓ |
+| Connexion broker (IBKR/MT5) | ✗ |
+| Risk management live (kill switch, max DD) | ✗ |
+| Monitoring / alertes (crash, data stale) | ✗ |
+| Validation OOS de l'optimizer | ✗ |
+| Logging persistant (fichier, rotation) | ✗ |
+
+---
+
+## Paramètres avancés
+
+```bash
+python pipe.py data.csv \
+  --tf d1 \
+  --horizon 10 \
+  --momentum 20 \
+  --upper 1.0 \
+  --lower 1.0 \
+  --frac-d 0.4 \
+  --spread 0.0004 \
+  --swap 0.00015 \
+  --min-train 50 \
+  --n-splits 5 \
+  --embargo 0.01
+```
 
 ---
 
 ## Dépendances
 
 ```
-pip install numpy pandas scikit-learn matplotlib scipy yfinance
+numpy
+pandas
+scikit-learn
+matplotlib
+scipy
+yfinance
 ```
 
 ---
@@ -140,3 +181,7 @@ pip install numpy pandas scikit-learn matplotlib scipy yfinance
 ## Références
 
 López de Prado, M. (2018). *Advances in Financial Machine Learning*. Wiley.
+
+---
+
+Gaëtan PRUVOT - 2026
